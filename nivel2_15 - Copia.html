@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <style>
+        body { margin: 0; overflow: hidden; background: #050508; color: white; font-family: 'Courier New', Courier, monospace; touch-action: none; }
+        #ui { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.85); padding: 12px; border: 2px solid #444; border-radius: 10px; z-index: 100; pointer-events: none; }
+        .stat { font-size: 18px; margin-bottom: 4px; font-weight: bold; }
+        #vida { color: #ff3333; }
+        #round { color: #ffff00; }
+        #escudo-ui { color: #5555ff; display: none; }
+        #dano-ui { color: #ff9900; display: none; font-size: 14px; margin-top: 5px; }
+        #event-ui { color: #ff0000; font-size: 16px; font-weight: bold; margin-top: 5px; animation: blink 1s infinite; display: none;}
+        #powerup-status { color: #00ffff; font-size: 14px; margin-top: 5px; }
+        .slot-btn { display: inline-block; padding: 4px 8px; margin-top: 3px; background: #222; border: 1px solid #00ffff; border-radius: 4px; font-size: 14px; cursor: pointer; color: #fff; pointer-events: auto; }
+        .slot-btn:active { background: #00ffff; color: #000; }
+        #msg-alerta { 
+            position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 60px; font-weight: bold; color: #ff00ff; text-align: center;
+            display: none; pointer-events: none; text-shadow: 4px 4px 15px black;
+            z-index: 1000; width: 90%;
+        }
+        #game-over-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); display: none; flex-direction: column;
+            align-items: center; justify-content: center; z-index: 2000;
+        }
+        .btn-morte {
+            padding: 15px 30px; margin: 10px; font-size: 20px; cursor: pointer;
+            background: #222; color: white; border: 2px solid white; border-radius: 5px;
+        }
+        /* Mobile UI */
+        #mobile-ui { position: absolute; bottom: 30px; right: 20px; z-index: 150; display: flex; gap: 15px; pointer-events: none; }
+        .mob-btn { 
+            width: 70px; height: 70px; background: rgba(0, 200, 255, 0.15); 
+            border: 2px solid rgba(0, 255, 255, 0.5); border-radius: 50%; 
+            color: white; display: flex; flex-direction: column; align-items: center; 
+            justify-content: center; font-size: 22px; font-weight: bold; cursor: pointer; 
+            user-select: none; pointer-events: auto; backdrop-filter: blur(2px);
+        }
+        .mob-btn:active { background: rgba(0, 255, 255, 0.5); }
+        .mob-btn span { font-size: 10px; margin-top: 4px; }
+        @keyframes blink { 50% { opacity: 0; } }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div class="stat">❤ VIDA: <span id="vida">10</span></div>
+    <div id="escudo-ui" class="stat">🛡 ESCUDO: <span id="escudo-val">0</span></div>
+    <div class="stat">⭐ ROUND: <span id="round">1</span></div>
+    <div id="dano-ui">🔥 DANO x3 ATIVO</div>
+    <div id="event-ui"></div>
+    
+    <div style="margin-top: 8px; border-top: 1px solid #555; padding-top: 5px; display: none;" id="pc-slots">
+        <div class="slot-btn" onclick="usePowerup(0)">[W] SLOT 1: <span id="slot0-txt" style="color:#00ffff;">VAZIO</span></div><br>
+        <div class="slot-btn" onclick="usePowerup(1)">[S] SLOT 2: <span id="slot1-txt" style="color:#00ffff;">VAZIO</span></div>
+    </div>
+    <div id="powerup-status"></div>
+</div>
+
+<!-- Controles Mobile (Apenas visível se for touch) -->
+<div id="mobile-ui">
+    <div class="mob-btn" ontouchstart="usePowerup(0); event.preventDefault();" id="mob-slot0">📦<span>SLOT 1</span></div>
+    <div class="mob-btn" ontouchstart="usePowerup(1); event.preventDefault();" id="mob-slot1">📦<span>SLOT 2</span></div>
+</div>
+
+<div id="msg-alerta"></div>
+
+<div id="game-over-screen">
+    <h1 style="color:red; font-size: 50px;">GAME OVER</h1>
+    <button class="btn-morte" onclick="reviver(true)">VOLTAR A RENASCER</button>
+    <button class="btn-morte" onclick="reviver(false)">VOLTAR NO COMEÇO</button>
+</div>
+
+<canvas id="game"></canvas>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const msgAlerta = document.getElementById("msg-alerta");
+const screenMorte = document.getElementById("game-over-screen");
+
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Detectar se é PC para mostrar botões do teclado no UI
+if (!('ontouchstart' in window)) {
+    document.getElementById("pc-slots").style.display = "block";
+    document.getElementById("mobile-ui").style.display = "none";
+}
+
+let checkpointRound = 1;
+let frameCount = 0;
+let player = { 
+    x: 60, y: canvas.height/2, size: 45, vida: 10, escudo: 0, inv: 0, blink: 0, 
+    tiroDuplo: 0, laserTimer: 0, slowTimer: 0, homingTimer: 0, reflectorTimer: 0, freezeTimer: 0, vorticeTimer: 0,
+    hasDrone: false, inventory: [] 
+};
+
+let tirosP = []; let tirosE = []; let enemies = []; let drops = []; let particles = []; let asteroides = [];
+let shakeTimer = 0; let round = 1; let active = false;
+
+// Variáveis de Buffs e Eventos
+let damageMult = 1;
+let empTimer = 0;
+let pInvertido = 0;
+let eventoAtual = null; // 'asteroides', 'emp', 'rapidfire'
+let eventoTimer = 0;
+
+// Rounds com Buff de Quantidade após Chefe 1 e Novo Chefe (15)
+const OLEADAS = [ 
+    [], 
+    [1, 1, 1, 2, 2, 2, 1, 1], 
+    [1, 3, 2, 2, 3, 2, 1, 3, 2, 3, 2, 3], 
+    [1, 5, 3, 2, 2, 3, 4, 5, 2, 2, 5, 4, 2, 3, 5], 
+    [1, 5, 4, 2, 2, 4, 1, 5, 4, 2, 3, 4, 1, 5, 4, 2, 2, 1], 
+    [6, 5, 2, 2, 6, 5, 4, 2, 6, 4, 3, 6, 5, 2, 3, 6, 5, 4, 2], 
+    [6, 2, 4, 3, 3, 1, 2, 5, 3, 2, 3, 5, 4, 3, 2, 1, 6, 5, 4, 2, 6, 5, 4, 2, 1, 1], 
+    [7], // Boss 1
+    [10, 11, 11, 10, 12, 12, 11, 10, 12, 11, 12, 10], // Buffado
+    [10, 13, 13, 14, 14, 11, 12, 13, 14, 10, 11, 13, 12], // Buffado
+    [15, 10, 11, 12, 13, 15, 12, 10, 11, 14, 15, 13, 12, 10], // Buffado
+    [16, 16, 17, 17, 10, 15, 12, 16, 17, 10, 11, 15, 16, 17], // Buffado
+    [10, 17, 15, 14, 13, 12, 11, 16, 17, 10, 13, 15, 17, 12, 11, 16], // Buffado
+    [10, 10, 15, 17, 17, 14, 14, 12, 12, 16, 13, 17, 15, 10, 16, 14, 12], // Buffado
+    [10, 10, 15, 15, 17, 17, 16, 16, 14, 14, 12, 12, 13, 11, 17, 16, 15, 14], // Buffado
+    [18] // Round 15: Boss 2
+];
+
+const POWERUP_TYPES = [
+    { id: 'bomba', name: '💣', txt: 'Bomba' },
+    { id: 'laser', name: '⚡', txt: 'Laser' },
+    { id: 'drone', name: '🛸', txt: 'Drone' },
+    { id: 'lentidao', name: '⏱', txt: 'Slow' },
+    { id: 'homing', name: '🎯', txt: 'Míssil' },
+    { id: 'vortice', name: '🌀', txt: 'Vórtice' },
+    { id: 'refletor', name: '🛡', txt: 'Refletor' },
+    { id: 'congelamento', name: '❄️', txt: 'Congelar' },
+    { id: 'duplo', name: '⚔', txt: 'Tiro x2' }
+];
+
+function getEnemyColor(tipo) {
+    const cores = { 
+        1: "red", 2: "orange", 3: "yellow", 4: "purple", 5: "green", 6: "pink",
+        10: "#708090", 11: "#e67e22", 12: "#ff0033", 13: "#8e44ad", 
+        14: "#00ffcc", 15: "#2ecc71", 16: "#4b0082", 17: "#00e5ff"
+    };
+    return cores[tipo] || "white";
+}
+
+function updateInventoryUI() {
+    let p0 = player.inventory[0]; let p1 = player.inventory[1];
+    document.getElementById("slot0-txt").innerText = p0 ? p0.txt : "VAZIO";
+    document.getElementById("slot1-txt").innerText = p1 ? p1.txt : "VAZIO";
+    
+    document.getElementById("mob-slot0").innerHTML = p0 ? `${p0.name}<span>${p0.txt}</span>` : `📦<span>SLOT 1</span>`;
+    document.getElementById("mob-slot1").innerHTML = p1 ? `${p1.name}<span>${p1.txt}</span>` : `📦<span>SLOT 2</span>`;
+}
+
+function usePowerup(slotIndex) {
+    if(empTimer > 0) return; // EMP bloqueia
+    if(player.inventory[slotIndex]) {
+        let pw = player.inventory[slotIndex].id;
+        player.inventory.splice(slotIndex, 1);
+        updateInventoryUI();
+        
+        if(pw === 'bomba') {
+            tirosE = []; shakeTimer = 30;
+            enemies.forEach(e => { if(!e.imortal) e.hp -= 15; e.flash = 5; });
+            for(let i=0; i<60; i++) particles.push({x: canvas.width/2, y: canvas.height/2, vx: (Math.random()-0.5)*25, vy: (Math.random()-0.5)*25, color: "#ffffff", size: Math.random()*15+5, life: 30});
+        } else if(pw === 'laser') {
+            player.laserTimer = 240; // NERFADO: 4s
+        } else if(pw === 'drone') {
+            player.hasDrone = true;
+        } else if(pw === 'lentidao') {
+            player.slowTimer = 360; // 6s
+        } else if(pw === 'homing') {
+            player.homingTimer = 480; // 8s
+        } else if(pw === 'vortice') {
+            player.vorticeTimer = 180; // NERFADO: 3s
+        } else if(pw === 'refletor') {
+            player.reflectorTimer = 300; // 5s
+        } else if(pw === 'congelamento') {
+            player.freezeTimer = 240; // 4s
+        } else if(pw === 'duplo') {
+            player.tiroDuplo = 600;
+        }
+    }
+}
+
+window.addEventListener('keydown', e => {
+    if(e.key === 'w' || e.key === 'W') usePowerup(0);
+    if(e.key === 's' || e.key === 'S') usePowerup(1);
+});
+
+function reviver(usarCheckpoint) {
+    screenMorte.style.display = "none";
+    if(!usarCheckpoint) { checkpointRound = 1; damageMult = 1; }
+    round = checkpointRound; player.vida = 10; player.inv = 100; player.hasDrone = false;
+    player.laserTimer = 0; player.slowTimer = 0; player.homingTimer = 0; player.reflectorTimer = 0; player.freezeTimer = 0; player.vorticeTimer = 0;
+    empTimer = 0; pInvertido = 0; eventoAtual = null; eventoTimer = 0;
+    enemies = []; tirosE = []; tirosP = []; drops = []; particles = []; asteroides = []; active = false;
+    spawn();
+}
+
+setInterval(() => {
+    if(player.vida > 0 && empTimer <= 0) {
+        if(player.laserTimer <= 0) {
+            if(player.homingTimer > 0) {
+                tirosP.push({ x: player.x + 45, y: player.y + 20, vx: 10, vy: 0, homing: true });
+            } else if(player.tiroDuplo > 0) {
+                tirosP.push({ x: player.x + 45, y: player.y + 10, vx: 12, vy: 0 });
+                tirosP.push({ x: player.x + 45, y: player.y + 30, vx: 12, vy: 0 });
+            } else { 
+                tirosP.push({ x: player.x + 45, y: player.y + 20, vx: 12, vy: 0 }); 
+            }
+        }
+        if(player.hasDrone) {
+            tirosP.push({ x: player.x - 10, y: player.y - 15, vx: 10, vy: 0 });
+        }
+    }
+}, 160);
+
+const move = (x, y) => {
+    let targetY = pInvertido > 0 ? canvas.height - y : y;
+    player.x = Math.max(10, Math.min(canvas.width / 2, x - 22));
+    player.y = Math.max(15, Math.min(canvas.height - 45, targetY - 22));
+};
+canvas.addEventListener("touchmove", e => { e.preventDefault(); move(e.touches[0].clientX, e.touches[0].clientY); }, {passive: false});
+document.addEventListener("mousemove", e => move(e.clientX, e.clientY));
+
+function spawn() {
+    active = true;
+    
+    // Sorteio de Eventos (20%)
+    eventoAtual = null; eventoTimer = 0;
+    if(round > 1 && round !== 7 && round !== 15 && Math.random() < 0.2) {
+        let evt = Math.floor(Math.random() * 3);
+        eventoTimer = 600; // 10s default
+        if(evt === 0) { eventoAtual = 'asteroides'; mostrarTexto("ROCHAS CAINDO", 2500, true); }
+        else if(evt === 1) { eventoAtual = 'emp'; empTimer = 300 + Math.random()*300; mostrarTexto("EMP ATIVO - SISTEMAS CAINDO", 2500, true); }
+        else if(evt === 2) { eventoAtual = 'rapidfire'; mostrarTexto("ALERTA: RAPID-FIRE INIMIGO", 2500, true); }
+    }
+
+    if(round === 7) mostrarTexto("Alvo Primário Detectado", 3000);
+    if(round === 15) mostrarTexto("ANOMALIA DETECTADA", 4000, true);
+    
+    document.getElementById("round").innerText = round === 7 ? "BOSS 1" : (round === 15 ? "BOSS FINAL" : round);
+    let layout = OLEADAS[Math.min(round, OLEADAS.length - 1)];
+    
+    layout.forEach((tipo, index) => {
+        let row = index % 5; let col = Math.floor(index / 5);
+        let hpPadrao = (tipo === 10 ? 20 : (tipo === 13 || tipo === 16 ? 6 : (tipo === 15 ? 5 : (tipo === 17 ? 4 : (tipo === 11 || tipo === 14 ? 3 : (tipo === 12 ? 2 : 4))))));
+        
+        let espacamentoY = Math.min(110, (canvas.height - 100) / 4);
+        
+        let en = {
+            x: canvas.width + 150, 
+            y: (tipo === 7 || tipo === 18) ? canvas.height/2 - 60 : 50 + (row * espacamentoY),
+            alvoX: (tipo === 7 || tipo === 18) ? canvas.width - 250 : canvas.width - 180 - (col * 80),
+            size: tipo === 18 ? 180 : (tipo === 7 ? 120 : (tipo === 9 ? 40 : (tipo === 10 ? 70 : 50))),
+            tipo: tipo, 
+            hp: tipo === 18 ? 1200 : (tipo === 7 ? 150 : hpPadrao),
+            maxHp: tipo === 18 ? 1200 : (tipo === 7 ? 150 : (tipo === 10 ? 20 : hpPadrao)), 
+            timer: 0, atkTimer: 0, estado: "entrando", dirY: 1, flash: 0, imortal: false,
+            entryY: 50 + (row * espacamentoY)
+        };
+
+        if(tipo === 17) {
+            en.reflectLimit = Math.floor(Math.random() * 5) + 6; // 6 a 10 defesas
+            en.reflectCount = 0; en.reflectCooldown = 0;
+        }
+        if(tipo === 18) { en.estadoBoss = 1; }
+
+        enemies.push(en);
+    });
+}
+
+function mostrarTexto(txt, tempo, especial = false) {
+    msgAlerta.innerText = txt;
+    msgAlerta.style.display = "block";
+    msgAlerta.style.fontSize = especial ? "70px" : "50px";
+    if(especial) msgAlerta.style.color = "#ff0000"; else msgAlerta.style.color = "#ff00ff";
+    let blink = setInterval(() => msgAlerta.style.visibility = (msgAlerta.style.visibility === 'hidden' ? 'visible' : 'hidden'), especial ? 100 : 200);
+    setTimeout(() => { clearInterval(blink); msgAlerta.style.display = "none"; }, tempo);
+}
+
+function checkCol(a, b, asW, asH, bs) { return a.x < b.x + bs && a.x + asW > b.x && a.y < b.y + bs && a.y + asH > b.y; }
+function checkColCircleRect(circle, rect) {
+    let testX = circle.x; let testY = circle.y;
+    if (circle.x < rect.x) testX = rect.x; else if (circle.x > rect.x + rect.size) testX = rect.x + rect.size;
+    if (circle.y < rect.y) testY = rect.y; else if (circle.y > rect.y + rect.size) testY = rect.y + rect.size;
+    let distX = circle.x - testX; let distY = circle.y - testY;
+    return (distX*distX + distY*distY) <= ((circle.size/2)*(circle.size/2));
+}
+
+function explodeBoss(bx, by) {
+    let colors = ["#ff0000", "#00ffff", "#ffff00", "#ff00ff", "#00ff00", "#ffffff"];
+    for(let i=0; i<200; i++) {
+        particles.push({
+            x: bx + 100, y: by + 100,
+            vx: (Math.random() - 0.5) * 30, vy: (Math.random() - 0.5) * 30,
+            color: colors[Math.floor(Math.random() * colors.length)],
+            size: Math.random() * 15 + 5, life: 80
+        });
+    }
+}
+
+// Lógica de Atividade de Tiro (Com Buff Slow & Evento RapidFire)
+function canAttack(en, interval) {
+    let atkSpeed = 1;
+    if (eventoAtual === 'rapidfire') atkSpeed = 2;
+    if (player.slowTimer > 0) atkSpeed *= 0.5;
+    
+    let prev = en.atkTimer;
+    en.atkTimer += atkSpeed;
+    return Math.floor(prev / interval) < Math.floor(en.atkTimer / interval);
+}
+
+function draw() {
+    frameCount++;
+    let sx = 0, sy = 0;
+    if(shakeTimer > 0) { sx = (Math.random() - 0.5) * (shakeTimer > 60 ? 30 : 12); sy = (Math.random() - 0.5) * (shakeTimer > 60 ? 30 : 12); shakeTimer--; }
+
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.clearRect(-20, -20, canvas.width+40, canvas.height+40);
+
+    // Gestão de UI & Eventos
+    document.getElementById("dano-ui").style.display = damageMult > 1 ? "block" : "none";
+    let eventUi = document.getElementById("event-ui");
+    if(empTimer > 0) { eventUi.style.display = "block"; eventUi.innerText = "EMP: ARMAS OFFLINE"; eventUi.style.color="red"; empTimer--; }
+    else if(pInvertido > 0) { eventUi.style.display = "block"; eventUi.innerText = "GRAVIDADE INVERTIDA"; eventUi.style.color="#ff00ff"; pInvertido--; }
+    else if(eventoAtual === 'asteroides') { eventUi.style.display = "block"; eventUi.innerText = "ALERTA METEOROS"; eventUi.style.color="orange"; }
+    else if(eventoAtual === 'rapidfire') { eventUi.style.display = "block"; eventUi.innerText = "INIMIGOS EM FÚRIA"; eventUi.style.color="yellow"; }
+    else { eventUi.style.display = "none"; }
+
+    // Eventos Temporizadores
+    if(eventoTimer > 0) {
+        eventoTimer--;
+        if(eventoAtual === 'asteroides' && Math.random() < 0.06) {
+            asteroides.push({x: canvas.width + 50, y: Math.random() * canvas.height, vx: -5 - Math.random()*5, vy: (Math.random()-0.5)*3, size: 40 + Math.random()*50});
+        }
+        if(eventoTimer <= 0) eventoAtual = null;
+    }
+
+    // Timers de Buffs do Jogador
+    if(player.slowTimer > 0) player.slowTimer--;
+    if(player.freezeTimer > 0) player.freezeTimer--;
+    if(player.laserTimer > 0) player.laserTimer--;
+    if(player.homingTimer > 0) player.homingTimer--;
+    if(player.reflectorTimer > 0) player.reflectorTimer--;
+    if(player.tiroDuplo > 0) player.tiroDuplo--;
+    if(player.vorticeTimer > 0) player.vorticeTimer--;
+
+    // Asteroides (Render & Colisão)
+    for(let i = asteroides.length - 1; i >= 0; i--) {
+        let a = asteroides[i];
+        a.x += a.vx; a.y += a.vy;
+        ctx.fillStyle = "#555"; ctx.beginPath(); ctx.arc(a.x, a.y, a.size/2, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = "#333"; ctx.lineWidth = 3; ctx.stroke();
+        
+        if(checkColCircleRect(a, player) && player.inv <= 0) {
+            if(player.escudo > 0) player.escudo--; else player.vida -= 1;
+            player.inv = 70; shakeTimer = 10;
+        }
+        if(a.x < -150) asteroides.splice(i, 1);
+    }
+
+    // Renderizar jogador
+    if(player.inv > 0) { 
+        player.inv--; player.blink++; 
+        if(player.blink % 6 < 3) { ctx.fillStyle = player.escudo > 0 ? "#5555ff" : "cyan"; ctx.fillRect(player.x, player.y, player.size, player.size); }
+    } else { ctx.fillStyle = player.escudo > 0 ? "#5555ff" : "cyan"; ctx.fillRect(player.x, player.y, player.size, player.size); }
+
+    if(player.reflectorTimer > 0) {
+        ctx.strokeStyle = "#00ffff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(player.x + player.size/2, player.y + player.size/2, player.size, 0, Math.PI*2); ctx.stroke();
+    }
+    if(player.hasDrone) { ctx.fillStyle = "#00ffff"; ctx.fillRect(player.x - 20, player.y - 25, 20, 20); }
+
+    // Laser Perfurante
+    if(player.laserTimer > 0 && empTimer <= 0) {
+        ctx.fillStyle = "#80ffff"; ctx.fillRect(player.x + 45, player.y + 15, canvas.width, 15);
+        enemies.forEach(en => {
+            if(en.y + en.size >= player.y + 15 && en.y <= player.y + 30 && en.x > player.x) {
+                if(!en.imortal && !en.refletindoTudo) { en.hp -= 0.2 * damageMult; en.flash = 2; }
+            }
+        });
+    }
+
+    document.getElementById("escudo-ui").style.display = player.escudo > 0 ? "block" : "none";
+    document.getElementById("escudo-val").innerText = player.escudo;
+
+    // Disparos do Jogador
+    for(let i = tirosP.length - 1; i >= 0; i--){
+        let tp = tirosP[i];
+        if(tp.homing) {
+            let target = enemies[0];
+            if(target) { tp.vy += ((target.y + target.size/2) - tp.y) * 0.05; }
+            tp.x += tp.vx; tp.y += tp.vy;
+            ctx.fillStyle = "#ffff00"; ctx.beginPath(); ctx.arc(tp.x, tp.y, 6, 0, Math.PI*2); ctx.fill();
+        } else {
+            tp.x += 20; ctx.fillStyle = "white"; ctx.fillRect(tp.x, tp.y, 30, 6);
+        }
+        if(tp.x > canvas.width) tirosP.splice(i, 1);
+    }
+
+    // Partículas
+    for(let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i]; p.x += p.vx; p.y += p.vy; p.life--;
+        ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size);
+        if(p.life <= 0) particles.splice(i, 1);
+    }
+
+    // Drops (Agora com timer de 3s no Vórtice)
+    for(let i = drops.length - 1; i >= 0; i--){
+        let d = drops[i]; 
+        if(player.vorticeTimer > 0) { d.x += (player.x - d.x) * 0.15; d.y += (player.y - d.y) * 0.15; } 
+        else { d.x -= 2; }
+        ctx.fillStyle = d.c; ctx.font = "bold 25px Arial"; ctx.fillText(d.sym, d.x, d.y + 20);
+        if(checkCol(d, player, 25, 25, player.size)) {
+            if(d.tipo === 'vida') player.vida = Math.min(15, player.vida + 1);
+            else if(d.tipo === 'escudo') player.escudo = 2;
+            else if(d.tipo === 'chave') { checkpointRound = round; mostrarTexto("CHECKPOINT!", 1500); }
+            else if(d.tipo === 'caixa') {
+                if(player.inventory.length < 2) {
+                    player.inventory.push(POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)]);
+                    updateInventoryUI();
+                }
+            }
+            drops.splice(i, 1);
+        } else if (d.x < -30) drops.splice(i, 1);
+    }
+
+    // Disparos Inimigos
+    let speedMult = player.slowTimer > 0 ? 0.5 : 1;
+    for(let i = tirosE.length - 1; i >= 0; i--){
+        let t = tirosE[i]; 
+        
+        // Comportamentos Especiais de Tiros
+        if(t.homingBoss) t.vy += (player.y - t.y) * 0.015;
+        if(t.starSplit && t.x < canvas.width/2 + 150 && t.x > canvas.width/2 - 150) {
+            for(let k=0; k<4; k++) tirosE.push({x:t.x, y:t.y, vx:Math.cos((Math.PI*2/4)*k)*6, vy:Math.sin((Math.PI*2/4)*k)*6, d:1, s:12, c:"#ff0033"});
+            tirosE.splice(i, 1); continue;
+        }
+
+        t.x += t.vx * speedMult; t.y += t.vy * speedMult; 
+        
+        if(t.tipoTiro === 'orbeEspelho' || t.c === "green") {
+            ctx.fillStyle = t.c; ctx.beginPath(); ctx.arc(t.x, t.y, t.s/2, 0, Math.PI*2); ctx.fill();
+        } else { ctx.fillStyle = t.c; ctx.fillRect(t.x, t.y, t.s * 1.5, t.s/1.8); }
+
+        if(player.reflectorTimer > 0 && checkCol(t, player, t.s * 1.5, t.s/1.8, player.size + 20)) {
+            if(Math.random() < 0.5) tirosP.push({ x: player.x + 40, y: player.y + 20, vx: 12, vy: (Math.random()-0.5)*4 });
+            tirosE.splice(i, 1); continue;
+        }
+
+        // Dano ao jogador
+        let hitboxS = t.tipoTiro === 'orbeEspelho' ? t.s : t.s * 1.5;
+        if(player.inv <= 0 && checkCol(t, player, hitboxS, t.s/1.8, player.size)){
+            if(t.tipoTiro === 'inversao') { pInvertido = 240; tirosE.splice(i, 1); continue; }
+            if(t.repulsaoForte) { player.x = 10; shakeTimer = 5; }
+            else if(t.repulsao) { player.x = Math.max(10, player.x - 80); } 
+            else {
+                if(player.escudo > 0) player.escudo--; else player.vida -= t.d;
+                player.inv = 70; shakeTimer = 10;
+            }
+            tirosE.splice(i, 1);
+        } else if(t.x < -400 || t.x > canvas.width + 400 || t.y < -300 || t.y > canvas.height + 300) tirosE.splice(i, 1);
+    }
+
+    // Processar Inimigos
+    enemies.forEach((en, idx) => {
+        if(player.freezeTimer <= 0 || en.tipo === 7 || en.tipo === 18) en.timer++;
+        
+        if(player.freezeTimer <= 0) {
+            // Movimentos
+            if(en.tipo === 2) { en.x -= 3.5 * speedMult; en.y += (player.y - en.y) * 0.08 * speedMult; }
+            if(en.tipo === 11) { 
+                en.x -= 4 * speedMult; en.y = en.entryY + Math.sin(en.timer * 0.05) * 150;
+                if(canAttack(en, 120)) {
+                    [-2, 0, 2].forEach(vy => tirosE.push({x:en.x, y:en.y, vx:-5, vy:vy, d:1, s:18, c:"#e67e22"}));
+                }
+            }
+            if(en.tipo === 12) { en.x -= 7 * speedMult; en.y += (player.y - en.y) * 0.02; }
+            if(en.tipo === 13) { if(Math.abs(player.y - en.y) < 300) player.y += (en.y - player.y) * 0.015; }
+            
+            if(en.tipo === 14) { 
+                en.imortal = (en.timer % 180) < 120;
+                if(canAttack(en, 180)) { [-1, 0, 1].forEach(vy => tirosE.push({x:en.x, y:en.y+15, vx:-7, vy:vy, d:1, s:15, c:"#00ffcc"})); }
+            }
+            if(en.tipo === 15 && canAttack(en, 180)) { 
+                enemies.forEach(e => { if(e.hp > 0 && e.tipo !== 7 && e.tipo !== 18) e.hp = Math.min(e.maxHp || 10, e.hp + 2); });
+            }
+            if(en.tipo === 16 && canAttack(en, 160)) { 
+                tirosE.push({x:en.x, y:en.y+20, vx:-4, vy:0, d:0, s:30, c:"#4b0082", repulsao: true});
+            }
+            if(en.tipo === 6 && canAttack(en, 180)){
+                let slots = [20, canvas.height/2 - 20, canvas.height - 80];
+                tirosE.push({x: en.x, y: slots[Math.floor(Math.random()*3)], vx: -6, vy: 0, d: 1, s: canvas.height*0.25, c: "pink"});
+            }
+            if(en.tipo === 1 && canAttack(en, 130)) tirosE.push({x:en.x, y:en.y+20, vx:-5, vy:0, d:1, s:20, c:"red"});
+            if(en.tipo === 3 && canAttack(en, 160)) tirosE.push({x:en.x, y:en.y+20, vx:-6, vy:(player.y-en.y)*0.018, d:1, s:18, c:"yellow"});
+            if(en.tipo === 4){
+                let c = en.timer % 320;
+                if(c > 140 && c < 280) {
+                    let lY = en.y + 15; ctx.fillStyle = (c < 200) ? "rgba(255,0,255,0.2)" : "#f0f"; ctx.fillRect(0, lY, en.x, 35);
+                    if(c >= 200 && player.inv <= 0 && player.x < en.x && player.y + player.size > lY && player.y < lY + 35) { if(player.escudo > 0) player.escudo--; else player.vida -= 1; player.inv = 90; }
+                }
+            }
+            if(en.tipo === 5 && canAttack(en, 150)) { tirosE.push({x: en.x, y: en.y + 20, vx: -15, vy: 0, d: 1, s: 40, c: "lime"}); shakeTimer = 5; }
+        }
+
+        // Render Inimigos Normais
+        if(en.tipo === 9) {
+            let boss = enemies.find(e => e.tipo === 7);
+            if(boss) { let angle = boss.timer * 0.05 + en.offset; en.x = boss.x + 60 + Math.cos(angle) * 180 - 20; en.y = boss.y + 60 + Math.sin(angle) * 180 - 20; }
+            ctx.fillStyle = en.flash > 0 ? "white" : "purple"; ctx.fillRect(en.x, en.y, 40, 40);
+        } else if (en.tipo !== 18) {
+            if(en.estado === "entrando") { en.x -= 3; if(en.x <= en.alvoX) en.estado = "parado"; }
+            if(en.flash > 0) { ctx.fillStyle = "white"; en.flash--; } 
+            else {
+                ctx.fillStyle = en.tipo === 14 && en.imortal ? "rgba(0, 255, 200, 0.3)" : getEnemyColor(en.tipo);
+                if(en.tipo === 17 && en.reflectCooldown > 0) ctx.fillStyle = "#333"; // Desligado
+            }
+            ctx.fillRect(en.x, en.y, en.size, en.size);
+            if(en.tipo === 17 && en.reflectCooldown <= 0) { ctx.fillStyle = "#ffffff"; ctx.fillRect(en.x, en.y, 6, en.size); } // Escudo
+            if(en.tipo === 17 && en.reflectCooldown > 0) en.reflectCooldown--;
+        }
+
+        // Chefe 1
+        if(en.tipo === 7) {
+            ctx.fillStyle = "red"; ctx.fillRect(canvas.width/2 - 200, 20, (en.hp/en.maxHp) * 400, 10);
+            if(!en.faseFinal) {
+                en.y += (en.hp <= 50 ? 5 : 3) * en.dirY; if(en.y < 40 || en.y > canvas.height - 160) en.dirY *= -1;
+                if(canAttack(en, 110)) for(let i=-2; i<=2; i++) tirosE.push({x:en.x, y:en.y+60, vx:-5, vy:i*0.8, d:1, s:22, c:"yellow"});
+                
+                if(en.hp <= 100) {
+                    if(canAttack(en, 120)) enemies.push({ x: en.x, y: en.y, alvoX: en.x-100, size: 50, tipo: 2, hp: 4, timer: 0, atkTimer:0, estado: "parado", flash: 0 });
+                    if(canAttack(en, 220)) { tirosE.push({x: en.x, y: en.y + 20, vx: -16, vy: 0, d: 1, s: 50, c: "lime"}); shakeTimer = 15; }
+                    if(!en.escudosCriados) { for(let i=0; i<8; i++) enemies.push({ tipo: 9, hp: 4, offset: (Math.PI*2/8)*i, flash: 0, timer: 0, size: 40 }); en.escudosCriados = true; }
+                }
+
+                let laserC = en.timer % 320;
+                if(laserC > 150 && laserC < 280) {
+                    let lY = en.y + 35; ctx.fillStyle = (laserC < 200) ? "rgba(255,255,255,0.2)" : "#f0f"; ctx.fillRect(0, lY, en.x, 50);
+                    if(laserC >= 200 && player.inv <= 0 && player.x < en.x && player.y + player.size > lY && player.y < lY + 50) {
+                        if(player.escudo > 0) player.escudo--; else player.vida -= 1; player.inv = 90;
+                    }
+                }
+            } else {
+                en.y += 4 * en.dirY; if(en.y < 40 || en.y > canvas.height - 160) en.dirY *= -1;
+                if(canAttack(en, 180)) enemies.push({ x: canvas.width, y: Math.random()*(canvas.height-100), alvoX: canvas.width-180, size: 45, tipo: Math.floor(Math.random()*5)+1, hp: 3, timer: 0, atkTimer:0, estado: "entrando", flash: 0 });
+                if(canAttack(en, 90)) for(let i=-1; i<=1; i++) tirosE.push({x:en.x, y:en.y+60, vx:-6, vy:i*1.5, d:1, s:20, c:"magenta"});
+            }
+        }
+
+        // CHEFE 2 (TIPO 18) - REBALANCEADO COM NOVOS ATAQUES E FASE 3 RÁPIDA
+        if(en.tipo === 18) {
+            // Barra de Vida (1200 HP Max)
+            ctx.fillStyle = en.imortal ? "silver" : "#ff0055"; 
+            ctx.fillRect(canvas.width/2 - 250, 20, Math.max(0, (en.hp/en.maxHp)) * 500, 12);
+            ctx.strokeStyle = "white"; ctx.lineWidth = 2; ctx.strokeRect(canvas.width/2 - 250, 20, 500, 12);
+
+            // Visual Nave
+            ctx.fillStyle = en.colorOverride || "#0d0221";
+            if(en.flash > 0) { ctx.fillStyle = "white"; en.flash--; }
+            ctx.beginPath(); ctx.moveTo(en.x + en.size, en.y); ctx.lineTo(en.x, en.y + en.size/2); ctx.lineTo(en.x + en.size, en.y + en.size); ctx.closePath(); ctx.fill();
+            ctx.strokeStyle = "#00f0ff"; ctx.lineWidth = 4; ctx.stroke();
+
+            // Inicializa e Processa Minas de Plasma (Sem afetar a física global)
+            if (!en.minas) en.minas = [];
+            for (let i = en.minas.length - 1; i >= 0; i--) {
+                let m = en.minas[i];
+                m.timer--;
+                let expansion = (60 - m.timer) * 0.4;
+                ctx.fillStyle = "rgba(255, 150, 0, 0.7)";
+                ctx.beginPath(); ctx.arc(m.x, m.y, 10 + expansion, 0, Math.PI*2); ctx.fill();
+                if (m.timer <= 0) { // Explode em 6 direções
+                    for(let d=0; d<6; d++) { 
+                        tirosE.push({x: m.x, y: m.y, vx: Math.cos((Math.PI*2/6)*d)*6, vy: Math.sin((Math.PI*2/6)*d)*6, d: 1, s: 15, c: "#ff9900"});
+                    }
+                    en.minas.splice(i, 1);
+                }
+            }
+
+            // ==================== FASE 1: GRADE DIMENSIONAL & DASH (1200 > HP > 700) ====================
+            if(en.estadoBoss === 1) {
+                let attackCycle = en.timer % 350;
+
+                if (attackCycle < 200) {
+                    // Movimentação Padrão
+                    if(en.x > en.alvoX) en.x -= 3;
+                    en.y += 3 * en.dirY * speedMult; 
+                    if(en.y < 50 || en.y > canvas.height - 220) en.dirY *= -1;
+
+                    // ATAQUE 1: Grade Dimensional (Cruz de Lasers Fixo)
+                    if(attackCycle > 100 && attackCycle < 170) {
+                        let crossX = canvas.width * 0.5;
+                        let crossY = canvas.height * 0.5;
+
+                        ctx.fillStyle = attackCycle < 140 ? "rgba(255, 0, 85, 0.2)" : "#ff0055";
+                        ctx.fillRect(0, crossY - (attackCycle < 140 ? 2 : 12), canvas.width, (attackCycle < 140 ? 4 : 24));
+                        ctx.fillRect(crossX - (attackCycle < 140 ? 2 : 12), 0, (attackCycle < 140 ? 4 : 24), canvas.height);
+
+                        if(attackCycle >= 140 && player.inv <= 0) {
+                            if(Math.abs(player.y + player.size/2 - crossY) < 20 || Math.abs(player.x + player.size/2 - crossX) < 20) {
+                                if(player.escudo > 0) player.escudo--; else player.vida--;
+                                player.inv = 60;
+                            }
+                        }
+                    }
+                    
+                    // Disparos Direcionados básicos
+                    if(canAttack(en, 90)) {
+                        for(let i = -1; i <= 1; i++) { tirosE.push({x: en.x, y: en.y + en.size/2, vx: -9, vy: i * 2, d: 1, s: 18, c: "cyan"}); }
+                    }
+                } else if (attackCycle < 240) {
+                    // Prepara o Dash (Recuo veloz para a direita)
+                    en.x += 2;
+                } else if (attackCycle < 270) {
+                    // ATAQUE 2: Dash Veloz para a Esquerda + Minas de Plasma
+                    en.x -= 14;
+                    if (attackCycle % 6 === 0) { en.minas.push({x: en.x + en.size/2, y: en.y + en.size/2, timer: 60}); }
+                } else {
+                    // Retorna ao ponto de descanso suavemente
+                    en.x += (en.alvoX - en.x) * 0.05;
+                }
+
+                if(en.hp <= 700) { en.estadoBoss = 1.5; en.imortal = true; en.seqTimer = 0; tirosE = []; }
+            }
+            
+            // TRANSIÇÃO 1 -> 2
+            else if(en.estadoBoss === 1.5) {
+                en.seqTimer++;
+                if(en.seqTimer === 10) mostrarTexto("CAMPO GRAVITACIONAL DETECTADO", 1200, true);
+                if(en.seqTimer > 100) { en.estadoBoss = 2; en.imortal = false; }
+            }
+
+            // ==================== FASE 2: SINGULARIDADE & ESPIRAL (700 > HP > 300) ====================
+            else if(en.estadoBoss === 2) {
+                ctx.fillStyle = "rgba(100, 0, 255, 0.05)"; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+                en.y += 4 * en.dirY * speedMult;
+                if(en.y < 40 || en.y > canvas.height - 220) en.dirY *= -1;
+
+                // ATAQUE 1: Singularidade Negra (Vórtice Central)
+                let vortexX = canvas.width * 0.4;
+                let vortexY = canvas.height * 0.5;
+                ctx.fillStyle = "rgba(138, 43, 226, 0.4)";
+                ctx.beginPath(); ctx.arc(vortexX, vortexY, 40 + Math.sin(en.timer*0.1)*15, 0, Math.PI*2); ctx.fill();
+
+                let dx = vortexX - player.x;
+                let dy = vortexY - player.y;
+                let dist = Math.sqrt(dx*dx + dy*dy);
+                if(dist < 450) { player.x += (dx / dist) * 1.5; player.y += (dy / dist) * 1.5; }
+
+                // ATAQUE 2: Escudo Refletor Frontal
+                let shieldCycle = en.timer % 300;
+                en.refletindoTudo = (shieldCycle < 150);
+                if(en.refletindoTudo) {
+                    ctx.fillStyle = "rgba(0, 255, 255, 0.5)";
+                    ctx.fillRect(en.x - 25, en.y, 15, en.size);
+                }
+
+                // ATAQUE 3: Espiral em Pétalas (Flower Bullet Hell)
+                if(canAttack(en, 25)) { 
+                    let angle = en.timer * 0.15;
+                    tirosE.push({x: en.x, y: en.y + en.size/2, vx: Math.cos(angle)*6 - 2, vy: Math.sin(angle)*6, d: 1, s: 16, c: "#a855f7"});
+                    tirosE.push({x: en.x, y: en.y + en.size/2, vx: Math.cos(angle + Math.PI)*6 - 2, vy: Math.sin(angle + Math.PI)*6, d: 1, s: 16, c: "#a855f7"});
+                }
+
+                if(en.hp <= 300) { en.estadoBoss = 2.5; en.imortal = true; en.seqTimer = 0; tirosE = []; en.refletindoTudo = false; }
+            }
+
+            // TRANSIÇÃO 2 -> 3
+            else if(en.estadoBoss === 2.5) {
+                en.seqTimer++;
+                if(en.seqTimer === 10) mostrarTexto("SOBRECARGA DE ABSORÇÃO!", 1200, true);
+                if(en.seqTimer > 90) {
+                    en.estadoBoss = 3; en.imortal = false;
+                    en.orbNaves = [1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15, 16, 17];
+                    en.orbAng = 0; en.f3T = 0;
+                }
+            }
+
+            // ==================== FASE 3: ABSORÇÃO ACELERADA (300 > HP > 0) ====================
+            else if(en.estadoBoss === 3) {
+                en.orbAng += 0.05;
+                
+                // Renderizar Naves Orbitando
+                en.orbNaves.forEach((tipo, i) => {
+                    let a = en.orbAng + (i/en.orbNaves.length) * Math.PI*2;
+                    let ox = en.x + en.size/2 + Math.cos(a)*150; 
+                    let oy = en.y + en.size/2 + Math.sin(a)*150;
+                    ctx.fillStyle = getEnemyColor(tipo); ctx.fillRect(ox-10, oy-10, 20, 20);
+                });
+
+                // ATAQUE 1: Fogo de Fundo Constante (Espiral)
+                if(canAttack(en, 15)) {
+                    let a = en.timer * 0.3;
+                    tirosE.push({x: en.x, y: en.y + en.size/2, vx: Math.cos(a)*5 - 2, vy: Math.sin(a)*5, d: 1, s: 12, c: "#ff00ff"});
+                }
+
+                // ATAQUE 2: Absorção Frenética (Cada 75 frames = ~1.25s) + Disparo Duplo
+                en.f3T++;
+                if(en.f3T >= 75) {
+                    en.f3T = 0;
+                    if(en.orbNaves.length > 0) {
+                        let naveAbsorvida = en.orbNaves.shift();
+                        en.colorOverride = getEnemyColor(naveAbsorvida);
+                        shakeTimer = 8;
+                        let cy = en.y + en.size/2;
+
+                        // Disparo Duplo Imediato (Uma onda frontal e outra levemente deslocada)
+                        for(let i = -2; i <= 2; i++) {
+                            tirosE.push({x: en.x, y: cy, vx: -12, vy: i * 2.5, d: 1, s: 20, c: en.colorOverride});
+                            tirosE.push({x: en.x + 40, y: cy, vx: -12, vy: i * 2.5, d: 1, s: 20, c: en.colorOverride});
+                        }
+                    } else {
+                        // Explode o chefe se ele ficar sem naves
+                        explodeBoss(en.x, en.y); en.hp = 0;
+                    }
+                }
+            }
+        }
+
+        // Colisão Player Bullets vs Inimigos / Orbes Espelho
+        for(let j = tirosP.length - 1; j >= 0; j--){
+            let tp = tirosP[j];
+            let bateuOrbe = false;
+
+            // Checa Colisão com Tiros Inimigos Especiais (Ex: Orbe do Boss)
+            for(let k = tirosE.length - 1; k >= 0; k--) {
+                let tE = tirosE[k];
+                if(tE.tipoTiro === 'orbeEspelho' && checkCol(tp, {x: tE.x-tE.s/2, y: tE.y-tE.s/2}, 30, 6, tE.s)) {
+                    // Direções cardinais para permitir esquiva (4 direções em vez de 8)
+                    for(let d=0; d<4; d++) tirosE.push({x: tE.x, y: tE.y, vx: Math.cos((Math.PI*2/4)*d)*6, vy: Math.sin((Math.PI*2/4)*d)*6, s: 15, c: 'white', d: 1});
+                    tirosE.splice(k, 1); tirosP.splice(j, 1); bateuOrbe = true; break;
+                }
+            }
+            if(bateuOrbe) continue;
+
+            if(checkCol(tp, en, 30, 6, en.size)){
+                // Mecânica Refletor do Tipo 17 ou Boss 3ª Fase
+                if((en.tipo === 17 && en.reflectCooldown <= 0 && tp.x <= en.x + 10) || (en.refletindoTudo && tp.x >= en.x - 60)) {
+                    tirosE.push({x: tp.x, y: tp.y, vx: -10, vy: (Math.random()-0.5)*3, d: 1, s: 18, c: "#00e5ff"});
+                    if(en.tipo === 17) {
+                        en.reflectCount++;
+                        if(en.reflectCount >= en.reflectLimit) { en.reflectCooldown = 600; en.reflectCount = 0; } // 10s OFF
+                    }
+                    tirosP.splice(j, 1); continue;
+                }
+
+                if(!en.imortal) { en.hp -= 1 * damageMult; en.flash = 3; } 
+                tirosP.splice(j, 1);
+
+                if(en.tipo === 7 && en.hp <= 20 && !en.faseFinal) {
+                    en.faseFinal = true; en.imortal = true;
+                    mostrarTexto("EU...", 1500); setTimeout(() => mostrarTexto("NÃO...", 1500), 1600); setTimeout(() => mostrarTexto("VOU...", 1500), 3200);
+                    setTimeout(() => { shakeTimer = 80; mostrarTexto("MORRERRR", 2000, true); en.imortal = false; en.maxHp = 50; en.hp = 50; }, 4800);
+                    return;
+                }
+
+                if(en.hp <= 0) {
+                    if(en.tipo === 12) {
+                        [{vx:-6,vy:0},{vx:6,vy:0},{vx:0,vy:-6},{vx:0,vy:6}].forEach(v => tirosE.push({x:en.x, y:en.y, vx:v.vx, vy:v.vy, d:1, s:15, c:"#ff0033"}));
+                    }
+                    if(enemies.length === 1 && active && en.tipo !== 18) drops.push({x: en.x, y: en.y, tipo: 'chave', sym: '🔑', c: 'gold'});
+                    else {
+                        let r = Math.random();
+                        if(r < 0.08) drops.push({x: en.x, y: en.y, tipo: 'vida', sym: '❤', c: '#ff3333'});
+                        else if(r < 0.28) drops.push({x: en.x, y: en.y, tipo: 'caixa', sym: '📦', c: '#00ffff'});
+                    }
+
+                    if(en.tipo === 7) { 
+                        explodeBoss(en.x, en.y); damageMult = 3; mostrarTexto("DANO PERMANENTE x3 RECEBIDO", 4000, true);
+                        enemies.splice(idx, 1);
+                        setTimeout(() => { round = 8; active = false; spawn(); }, 4000); return;
+                    }
+                    if(en.tipo === 18) {
+                        enemies.splice(idx, 1);
+                        setTimeout(() => { alert("VOCÊ DERROTOU A ANOMALIA. O UNIVERSO ESTÁ SALVO."); location.reload(); }, 5000); return;
+                    }
+                    enemies.splice(idx, 1);
+                }
+            }
+        }
+
+        if(en.x < -150 || en.x > canvas.width + 300 || en.y < -300 || en.y > canvas.height + 300) enemies.splice(idx, 1);
+    });
+
+    ctx.restore(); 
+    document.getElementById("vida").innerText = player.vida;
+    if(player.vida <= 0) screenMorte.style.display = "flex"; 
+    
+    if(active && enemies.filter(e => e.tipo !== 9 && e.tipo !== 2).length === 0){ 
+        round++; active = false; setTimeout(spawn, 1500); 
+    }
+    
+    requestAnimationFrame(draw);
+}
+
+spawn(); draw();
+</script>
+</body>
+</html>
