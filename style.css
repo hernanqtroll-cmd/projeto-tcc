@@ -1,0 +1,39 @@
+@import url('https://fonts.cdnfonts.com/css/minecraft-4');
+
+body {
+    background-color: #090909;
+    color: rgb(247, 246, 246);
+    font-family: 'Minecraft', 'Calibri', sans-serif;
+}
+
+.sobre-foto img {
+    width: 350px;
+    height: 350px;
+    object-fit: cover;
+    border-radius: 50%;
+}
+
+#sobre {
+    min-height: 500px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 60px 8%;
+    gap: 50px;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 25px 8%;
+}
+
+nav {
+    display: flex;
+    gap: 25px;
+}
+nav a {
+    color: white;
+    text-decoration: none;
+}
